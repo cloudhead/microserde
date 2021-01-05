@@ -1,6 +1,6 @@
 //! Deserialization traits.
 //!
-//! Deserialization in miniserde works by returning a "place" into which data
+//! Deserialization in microserde works by returning a "place" into which data
 //! may be written through the methods of the `Visitor` trait object.
 //!
 //! Use the `make_place!` macro to acquire a "place" type. A library may use a
@@ -24,8 +24,8 @@
 //! type.
 //!
 //! ```rust
-//! use miniserde::{make_place, Result};
-//! use miniserde::de::{Deserialize, Visitor};
+//! use microserde::{make_place, Result};
+//! use microserde::de::{Deserialize, Visitor};
 //!
 //! make_place!(Place);
 //!
@@ -59,8 +59,8 @@
 //! that can hand out places to write sequence elements one element at a time.
 //!
 //! ```rust
-//! use miniserde::{make_place, Result};
-//! use miniserde::de::{Deserialize, Seq, Visitor};
+//! use microserde::{make_place, Result};
+//! use microserde::de::{Deserialize, Seq, Visitor};
 //! use std::mem;
 //!
 //! make_place!(Place);
@@ -119,8 +119,8 @@
 //! `#[derive(Deserialize)]`.
 //!
 //! ```rust
-//! use miniserde::{make_place, Result};
-//! use miniserde::de::{Deserialize, Map, Visitor};
+//! use microserde::{make_place, Result};
+//! use microserde::de::{Deserialize, Map, Visitor};
 //!
 //! make_place!(Place);
 //!
@@ -167,8 +167,8 @@
 //!     fn finish(&mut self) -> Result<()> {
 //!         // Make sure we have every field and then write the output object
 //!         // into self.out.
-//!         let code = self.code.take().ok_or(miniserde::Error)?;
-//!         let message = self.message.take().ok_or(miniserde::Error)?;
+//!         let code = self.code.take().ok_or(microserde::Error)?;
+//!         let message = self.message.take().ok_or(microserde::Error)?;
 //!         *self.out = Some(Demo { code, message });
 //!         Ok(())
 //!     }
@@ -193,8 +193,8 @@ pub trait Deserialize: Sized {
     /// The only correct implementation of this method is:
     ///
     /// ```rust
-    /// # use miniserde::make_place;
-    /// # use miniserde::de::{Deserialize, Visitor};
+    /// # use microserde::make_place;
+    /// # use microserde::de::{Deserialize, Visitor};
     /// #
     /// # make_place!(Place);
     /// # struct S;

@@ -5,7 +5,7 @@ use crate::ser::{Fragment, Map, Seq, Serialize};
 /// Serialize any serializable type into a JSON string.
 ///
 /// ```rust
-/// use miniserde::{json, Serialize};
+/// use microserde::{json, Serialize};
 ///
 /// #[derive(Serialize, Debug)]
 /// struct Example {
@@ -55,11 +55,11 @@ fn to_string_impl(value: &dyn Serialize) -> String {
             Fragment::Null => out.push_str("null"),
             Fragment::Bool(b) => out.push_str(if b { "true" } else { "false" }),
             Fragment::Str(s) => escape_str(&s, &mut out),
-            Fragment::U64(n) => out.push_str(itoa::Buffer::new().format(n)),
-            Fragment::I64(n) => out.push_str(itoa::Buffer::new().format(n)),
+            Fragment::U64(n) => out.push_str(n.to_string().as_str()),
+            Fragment::I64(n) => out.push_str(n.to_string().as_str()),
             Fragment::F64(n) => {
                 if n.is_finite() {
-                    out.push_str(ryu::Buffer::new().format_finite(n))
+                    out.push_str(n.to_string().as_str())
                 } else {
                     out.push_str("null")
                 }

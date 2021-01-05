@@ -1,4 +1,4 @@
-use miniserde::json;
+use microserde::json;
 
 #[test]
 fn main() {

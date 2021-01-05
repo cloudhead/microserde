@@ -14,7 +14,7 @@ use crate::Place;
 /// arbitrarily deeply nested instances.
 ///
 /// ```rust
-/// use miniserde::json::{Array, Value};
+/// use microserde::json::{Array, Value};
 ///
 /// let mut value = Value::Null;
 /// for _ in 0..100000 {

@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 /// Deserialize a JSON string into any deserializable type.
 ///
 /// ```rust
-/// use miniserde::{json, Deserialize};
+/// use microserde::{json, Deserialize};
 ///
 /// #[derive(Deserialize, Debug)]
 /// struct Example {
@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 ///     message: String,
 /// }
 ///
-/// fn main() -> miniserde::Result<()> {
+/// fn main() -> microserde::Result<()> {
 ///     let j = r#" {"code": 200, "message": "reminiscent of Serde"} "#;
 ///
 ///     let out: Example = json::from_str(&j)?;

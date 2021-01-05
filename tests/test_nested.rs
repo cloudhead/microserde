@@ -1,4 +1,4 @@
-use miniserde::json::{self, Value};
+use microserde::json::{self, Value};
 
 #[test]
 fn test_round_trip_deeply_nested() {

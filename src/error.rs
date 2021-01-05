@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 /// Error type when deserialization fails.
 ///
-/// Miniserde errors contain no information about what went wrong. **If you need
+/// Microserde errors contain no information about what went wrong. **If you need
 /// more than no information, use Serde.**
 #[derive(Copy, Clone, Debug)]
 pub struct Error;
@@ -12,12 +12,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("miniserde error")
+        formatter.write_str("microserde error")
     }
 }
 
 impl std::error::Error for Error {
     fn description(&self) -> &str {
-        "miniserde error"
+        "microserde error"
     }
 }

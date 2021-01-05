@@ -1,24 +1,19 @@
 [package]
-name = "miniserde"
+name = "microserde"
 version = "0.1.13"
-authors = ["David Tolnay <dtolnay@gmail.com>"]
+authors = ["David Tolnay <dtolnay@gmail.com>", "Alexis Sellier <self@cloudhead.io>"]
 license = "MIT OR Apache-2.0"
-description = "Data structure serialization library with several opposite design goals from Serde."
-repository = "https://github.com/dtolnay/miniserde"
-documentation = "https://docs.rs/miniserde"
+description = "Zero-dependency implementation of Serde"
+repository = "https://github.com/cloudhead/microserde"
+documentation = "https://docs.rs/microserde"
 readme = "README.md"
 edition = "2018"
 
 [dependencies]
-itoa = "0.4.3"
-mini-internal = { version = "=0.1.13", path = "derive" }
-ryu = "1.0"
+microserde-derive = { version = "=0.1.13", path = "derive" }
 
 [dev-dependencies]
 automod = "1.0"
-serde = "1.0"
-serde_derive = "1.0"
-serde_json = "1.0"
 
 [workspace]
 members = ["derive"]

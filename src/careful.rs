@@ -4,8 +4,8 @@
 // on the heap in a way that ensures all internal references are live at the
 // right times.
 //
-// The unsafety is contained to the implementation of miniserde::json and not
-// exposed to Serialize and Deserialize impls, so the miniserde public API
+// The unsafety is contained to the implementation of microserde::json and not
+// exposed to Serialize and Deserialize impls, so the microserde public API
 // remains entirely safe to use.
 //
 //     careful!(EXPR as TYPE)

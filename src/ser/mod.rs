@@ -1,12 +1,12 @@
 //! Serialization traits.
 //!
-//! Serialization in miniserde works by traversing an input object and
+//! Serialization in microserde works by traversing an input object and
 //! decomposing it iteratively into a stream of fragments.
 //!
 //! ## Serializing a primitive
 //!
 //! ```rust
-//! use miniserde::ser::{Fragment, Serialize};
+//! use microserde::ser::{Fragment, Serialize};
 //!
 //! // The data structure that we want to serialize as a primitive.
 //! struct MyBoolean(bool);
@@ -21,7 +21,7 @@
 //! ## Serializing a sequence
 //!
 //! ```rust
-//! use miniserde::ser::{Fragment, Seq, Serialize};
+//! use microserde::ser::{Fragment, Seq, Serialize};
 //!
 //! // Some custom sequence type that we want to serialize.
 //! struct MyVec<T>(Vec<T>);
@@ -50,7 +50,7 @@
 //! `#[derive(Serialize)]`.
 //!
 //! ```rust
-//! use miniserde::ser::{Fragment, Map, Serialize};
+//! use microserde::ser::{Fragment, Map, Serialize};
 //! use std::borrow::Cow;
 //!
 //! // The struct that we would like to serialize.
