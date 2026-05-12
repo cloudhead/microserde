@@ -1,5 +1,6 @@
 pub use crate::lib::Box;
 pub use crate::lib::Cow;
+pub use crate::lib::Default;
 
 #[cfg(not(feature = "std"))]
 pub use core::option::Option::{self, None, Some};

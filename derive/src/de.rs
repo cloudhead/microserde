@@ -29,11 +29,35 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
 
     let fieldname = fields.named.iter().map(|f| &f.ident).collect::<Vec<_>>();
     let fieldty = fields.named.iter().map(|f| &f.ty);
+    let fieldattrs = fields
+        .named
+        .iter()
+        .map(|f| attr::field_attrs(&f.attrs))
+        .collect::<Result<Vec<_>>>()?;
     let fieldstr = fields
         .named
         .iter()
-        .map(attr::name_of_field)
+        .zip(&fieldattrs)
+        .map(|(field, attrs)| {
+            Ok(attrs
+                .rename
+                .clone()
+                .unwrap_or_else(|| field.ident.as_ref().unwrap().to_string()))
+        })
         .collect::<Result<Vec<_>>>()?;
+    let fielddefault = fields
+        .named
+        .iter()
+        .zip(&fieldattrs)
+        .map(|(field, attrs)| {
+            if attrs.default {
+                let ty = &field.ty;
+                quote!(microserde::export::Some(<#ty as microserde::export::Default>::default()))
+            } else {
+                quote!(microserde::Deserialize::default())
+            }
+        })
+        .collect::<Vec<_>>();
 
     let wrapper_generics = bound::with_lifetime_bound(&input.generics, "'__a");
     let (wrapper_impl_generics, wrapper_ty_generics, _) = wrapper_generics.split_for_impl();
@@ -64,7 +88,7 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
                 fn map(&mut self) -> microserde::Result<microserde::export::Box<dyn microserde::de::Map + '_>> {
                     Ok(microserde::export::Box::new(__State {
                         #(
-                            #fieldname: microserde::Deserialize::default(),
+                            #fieldname: #fielddefault,
                         )*
                         __out: &mut self.__out,
                     }))

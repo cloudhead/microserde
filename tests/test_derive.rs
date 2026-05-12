@@ -21,6 +21,15 @@ struct Nested {
     z: Option<String>,
 }
 
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+struct WithDefaults {
+    required: String,
+    #[serde(default)]
+    count: usize,
+    #[serde(default, rename = "items")]
+    values: Vec<String>,
+}
+
 #[test]
 fn test_de() {
     let j = r#" {"x": "X", "t1": "A", "t2": "renamedB", "n": {"y": ["Y", "Y"]}} "#;
@@ -50,5 +59,28 @@ fn test_ser() {
     };
     let actual = json::to_string(&example);
     let expected = r#"{"x":"X","t1":"A","t2":"renamedB","n":{"y":["Y","Y"],"z":null}}"#;
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_default() {
+    let actual: WithDefaults = json::from_str(r#"{"required":"present"}"#).unwrap();
+    let expected = WithDefaults {
+        required: "present".to_owned(),
+        count: 0,
+        values: Vec::new(),
+    };
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_default_present() {
+    let actual: WithDefaults =
+        json::from_str(r#"{"required":"present","count":3,"items":["a","b"]}"#).unwrap();
+    let expected = WithDefaults {
+        required: "present".to_owned(),
+        count: 3,
+        values: vec!["a".to_owned(), "b".to_owned()],
+    };
     assert_eq!(actual, expected);
 }

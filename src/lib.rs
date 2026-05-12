@@ -121,7 +121,7 @@
 //! configurability you can handwrite arbitrarily complicated implementations of
 //! its traits.
 //!
-//! Microserde provides just one attribute which is `rename`, and severely
+//! Microserde provides only `rename` and field-level `default`, and severely
 //! restricts the kinds of on-the-fly manipulation that are possible in custom
 //! impls. If you need any of this, use Serde -- it's a great library.
 

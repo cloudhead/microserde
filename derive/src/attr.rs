@@ -1,8 +1,18 @@
+use proc_macro2::Span;
 use syn::{Attribute, Error, Field, Lit, Meta, NestedMeta, Result, Variant};
 
-/// Find the value of a #[serde(rename = "...")] attribute.
-fn attr_rename(attrs: &[Attribute]) -> Result<Option<String>> {
+/// Supported `#[serde(...)]` attributes on a struct field.
+pub struct FieldAttrs {
+    /// Field name override from `#[serde(rename = "...")]`.
+    pub rename: Option<String>,
+    /// Whether the field uses `#[serde(default)]` when missing.
+    pub default: bool,
+}
+
+/// Find supported #[serde(...)] field attributes.
+pub fn field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs> {
     let mut rename = None;
+    let mut default = false;
 
     for attr in attrs {
         if !attr.path.is_ident("serde") {
@@ -26,17 +36,40 @@ fn attr_rename(attrs: &[Attribute]) -> Result<Option<String>> {
                     }
                 }
             }
+            if let NestedMeta::Meta(Meta::Path(path)) = meta {
+                if path.is_ident("default") {
+                    if default {
+                        return Err(Error::new_spanned(meta, "duplicate default attribute"));
+                    }
+                    default = true;
+                    continue;
+                }
+            }
             return Err(Error::new_spanned(meta, "unsupported attribute"));
         }
     }
 
-    Ok(rename)
+    Ok(FieldAttrs { rename, default })
+}
+
+/// Find the value of a #[serde(rename = "...")] attribute.
+fn attr_rename(attrs: &[Attribute]) -> Result<Option<String>> {
+    let attrs = field_attrs(attrs)?;
+    if attrs.default {
+        return Err(Error::new(
+            Span::call_site(),
+            "default attribute is only supported on fields",
+        ));
+    }
+    Ok(attrs.rename)
 }
 
 /// Determine the name of a field, respecting a rename attribute.
 pub fn name_of_field(field: &Field) -> Result<String> {
-    let rename = attr_rename(&field.attrs)?;
-    Ok(rename.unwrap_or_else(|| field.ident.as_ref().unwrap().to_string()))
+    let attrs = field_attrs(&field.attrs)?;
+    Ok(attrs
+        .rename
+        .unwrap_or_else(|| field.ident.as_ref().unwrap().to_string()))
 }
 
 /// Determine the name of a variant, respecting a rename attribute.
