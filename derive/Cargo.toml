@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "Derive macros for microserde. Use the re-exports from the microserde crate instead."
 repository = "https://github.com/cloudhead/microserde"
 documentation = "https://docs.rs/microserde"
-edition = "2018"
+edition = "2021"
 
 [lib]
 proc-macro = true

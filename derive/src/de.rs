@@ -2,7 +2,7 @@ use crate::{attr, bound};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Ident, Result,
+    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Result,
 };
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
@@ -22,13 +22,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    let dummy = Ident::new(
-        &format!("_IMPL_MINIDESERIALIZE_FOR_{}", ident),
-        Span::call_site(),
-    );
-
     let fieldname = fields.named.iter().map(|f| &f.ident).collect::<Vec<_>>();
-    let fieldty = fields.named.iter().map(|f| &f.ty);
+    let fieldty = fields.named.iter().map(|f| &f.ty).collect::<Vec<_>>();
     let fieldattrs = fields
         .named
         .iter()
@@ -54,7 +49,8 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
                 let ty = &field.ty;
                 quote!(microserde::export::Some(<#ty as microserde::export::Default>::default()))
             } else {
-                quote!(microserde::Deserialize::default())
+                let ty = &field.ty;
+                quote!(<#ty as microserde::Deserialize>::default())
             }
         })
         .collect::<Vec<_>>();
@@ -65,8 +61,8 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
     let bounded_where_clause = bound::where_clause_with_bound(&input.generics, bound);
 
     Ok(quote! {
-        #[allow(non_upper_case_globals)]
-        const #dummy: () = {
+        #[allow(non_local_definitions)]
+        const _: () = {
             #[repr(C)]
             struct __Visitor #impl_generics #where_clause {
                 __out: microserde::export::Option<#ident #ty_generics>,
@@ -106,9 +102,9 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
                 fn key(&mut self, __k: &microserde::export::str) -> microserde::Result<&mut dyn microserde::de::Visitor> {
                     match __k {
                         #(
-                            #fieldstr => microserde::export::Ok(microserde::Deserialize::begin(&mut self.#fieldname)),
+                            #fieldstr => microserde::export::Ok(<#fieldty as microserde::Deserialize>::begin(&mut self.#fieldname)),
                         )*
-                        _ => microserde::export::Ok(microserde::de::Visitor::ignore()),
+                        _ => microserde::export::Ok(<dyn microserde::de::Visitor>::ignore()),
                     }
                 }
 
@@ -137,10 +133,6 @@ pub fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenS
     }
 
     let ident = &input.ident;
-    let dummy = Ident::new(
-        &format!("_IMPL_MINIDESERIALIZE_FOR_{}", ident),
-        Span::call_site(),
-    );
 
     let var_idents = enumeration
         .variants
@@ -160,8 +152,8 @@ pub fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenS
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        #[allow(non_upper_case_globals)]
-        const #dummy: () = {
+        #[allow(non_local_definitions)]
+        const _: () = {
             #[repr(C)]
             struct __Visitor {
                 __out: microserde::export::Option<#ident>,

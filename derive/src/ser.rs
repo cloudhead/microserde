@@ -2,7 +2,7 @@ use crate::{attr, bound};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Ident, Result,
+    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Result,
 };
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
@@ -22,11 +22,6 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    let dummy = Ident::new(
-        &format!("_IMPL_MINISERIALIZE_FOR_{}", ident),
-        Span::call_site(),
-    );
-
     let fieldname = &fields.named.iter().map(|f| &f.ident).collect::<Vec<_>>();
     let fieldstr = fields
         .named
@@ -41,8 +36,8 @@ fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStrea
     let bounded_where_clause = bound::where_clause_with_bound(&input.generics, bound);
 
     Ok(quote! {
-        #[allow(non_upper_case_globals)]
-        const #dummy: () = {
+        #[allow(non_local_definitions)]
+        const _: () = {
             impl #impl_generics microserde::Serialize for #ident #ty_generics #bounded_where_clause {
                 fn begin(&self) -> microserde::ser::Fragment {
                     microserde::ser::Fragment::Map(microserde::export::Box::new(__Map {
@@ -85,10 +80,6 @@ fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenStrea
     }
 
     let ident = &input.ident;
-    let dummy = Ident::new(
-        &format!("_IMPL_MINISERIALIZE_FOR_{}", ident),
-        Span::call_site(),
-    );
 
     let var_idents = enumeration
         .variants
@@ -108,8 +99,8 @@ fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenStrea
         .collect::<Result<Vec<_>>>()?;
 
     Ok(quote! {
-        #[allow(non_upper_case_globals)]
-        const #dummy: () = {
+        #[allow(non_local_definitions)]
+        const _: () = {
             impl microserde::Serialize for #ident {
                 fn begin(&self) -> microserde::ser::Fragment {
                     match self {

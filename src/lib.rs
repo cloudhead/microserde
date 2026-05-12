@@ -127,6 +127,7 @@
 
 #![doc(html_root_url = "https://docs.rs/microserde/0.1.13")]
 #![allow(
+    non_local_definitions,
     clippy::needless_doctest_main,
     // Regression causing false positives:
     // https://github.com/rust-lang/rust-clippy/issues/5343
@@ -148,6 +149,7 @@
     clippy::single_match_else,
     clippy::too_many_lines,
 )]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
@@ -156,6 +158,7 @@ extern crate alloc;
 /// A facade around all the types we need from the `std`, `core`, and `alloc`
 /// crates. This avoids elaborate import wrangling having to happen in every
 /// module.
+#[allow(unused_imports)]
 mod lib {
     mod core {
         #[cfg(not(feature = "std"))]

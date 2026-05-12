@@ -7,7 +7,7 @@ description = "Zero-dependency implementation of Serde"
 repository = "https://github.com/cloudhead/microserde"
 documentation = "https://docs.rs/microserde"
 readme = "README.md"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 microserde-derive = { version = "=0.1.13", path = "derive" }

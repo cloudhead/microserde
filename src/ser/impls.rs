@@ -74,7 +74,7 @@ macro_rules! float {
 float!(f32);
 float!(f64);
 
-impl<'a, T: ?Sized + Serialize> Serialize for &'a T {
+impl<T: ?Sized + Serialize> Serialize for &T {
     fn begin(&self) -> Fragment {
         (**self).begin()
     }
