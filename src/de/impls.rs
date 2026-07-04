@@ -5,6 +5,8 @@ use crate::lib::str::FromStr;
 use crate::lib::*;
 #[cfg(feature = "std")]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
+use std::path::PathBuf;
 
 use crate::de::{Deserialize, Map, Seq, Visitor};
 use crate::error::{Error, Result};
@@ -39,6 +41,19 @@ impl Deserialize for String {
         impl Visitor for Place<String> {
             fn string(&mut self, s: &str) -> Result<()> {
                 self.out = Some(s.to_owned());
+                Ok(())
+            }
+        }
+        Place::new(out)
+    }
+}
+
+#[cfg(feature = "std")]
+impl Deserialize for PathBuf {
+    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
+        impl Visitor for Place<PathBuf> {
+            fn string(&mut self, s: &str) -> Result<()> {
+                self.out = Some(PathBuf::from(s));
                 Ok(())
             }
         }

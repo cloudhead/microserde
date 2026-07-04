@@ -2,21 +2,42 @@ use crate::{attr, bound};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Result,
+    parse_quote, Data, DataEnum, DeriveInput, Error, Fields, FieldsNamed, FieldsUnnamed, Result,
 };
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     match &input.data {
-        Data::Struct(DataStruct {
-            fields: Fields::Named(fields),
-            ..
-        }) => derive_struct(&input, fields),
+        Data::Struct(data) => match attr::struct_kind(&input.attrs, data)? {
+            attr::StructKind::Transparent(fields) => derive_transparent_struct(&input, fields),
+            attr::StructKind::Named(fields) => derive_struct(&input, fields),
+        },
         Data::Enum(enumeration) => derive_enum(&input, enumeration),
-        _ => Err(Error::new(
-            Span::call_site(),
-            "currently only structs with named fields are supported",
-        )),
+        _ => Err(Error::new(Span::call_site(), "unsupported derive input")),
     }
+}
+
+fn derive_transparent_struct(input: &DeriveInput, fields: &FieldsUnnamed) -> Result<TokenStream> {
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+    let fieldty = &fields.unnamed[0].ty;
+    let bound = parse_quote!(microserde::Deserialize);
+    let bounded_where_clause = bound::where_clause_with_bound(&input.generics, bound);
+
+    Ok(quote! {
+        impl #impl_generics microserde::Deserialize for #ident #ty_generics #bounded_where_clause {
+            fn begin(__out: &mut microserde::export::Option<Self>) -> &mut dyn microserde::de::Visitor {
+                microserde::de::transparent(__out)
+            }
+        }
+
+        impl #impl_generics microserde::de::Transparent for #ident #ty_generics #bounded_where_clause {
+            type Inner = #fieldty;
+
+            fn wrap(__value: Self::Inner) -> Self {
+                #ident(__value)
+            }
+        }
+    })
 }
 
 pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {

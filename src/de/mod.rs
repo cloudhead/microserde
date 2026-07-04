@@ -275,3 +275,102 @@ pub trait Map {
     fn key(&mut self, k: &str) -> Result<&mut dyn Visitor>;
     fn finish(&mut self) -> Result<()>;
 }
+
+// Not public API. Implemented by `#[serde(transparent)]` newtypes, which
+// deserialize by delegating to the inner type and wrapping the result.
+#[doc(hidden)]
+pub trait Transparent: Sized {
+    type Inner: Deserialize;
+    fn wrap(inner: Self::Inner) -> Self;
+}
+
+// Not public API. The `Deserialize::begin` of `#[serde(transparent)]` derived
+// impls.
+#[doc(hidden)]
+pub fn transparent<T: Transparent>(out: &mut Option<T>) -> &mut dyn Visitor {
+    make_place!(Place);
+
+    impl<T: Transparent> Place<T> {
+        fn wrap(&mut self, value: Option<T::Inner>) -> Result<()> {
+            self.out = Some(T::wrap(value.ok_or(Error)?));
+            Ok(())
+        }
+    }
+
+    macro_rules! forward {
+        ($name:ident $(, $arg:ident: $ty:ty)*) => {
+            fn $name(&mut self $(, $arg: $ty)*) -> Result<()> {
+                let mut value = None;
+                Deserialize::begin(&mut value).$name($($arg),*)?;
+                self.wrap(value)
+            }
+        };
+    }
+
+    impl<T: Transparent> Visitor for Place<T> {
+        forward!(null);
+        forward!(boolean, b: bool);
+        forward!(string, s: &str);
+        forward!(negative, n: i64);
+        forward!(nonnegative, n: u64);
+        forward!(float, n: f64);
+
+        fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
+            let mut value = Box::new(None);
+            let ptr = careful!(&mut *value as &mut Option<T::Inner>);
+            Ok(Box::new(TransparentSeq {
+                out: &mut self.out,
+                value,
+                seq: Deserialize::begin(ptr).seq()?,
+            }))
+        }
+
+        fn map(&mut self) -> Result<Box<dyn Map + '_>> {
+            let mut value = Box::new(None);
+            let ptr = careful!(&mut *value as &mut Option<T::Inner>);
+            Ok(Box::new(TransparentMap {
+                out: &mut self.out,
+                value,
+                map: Deserialize::begin(ptr).map()?,
+            }))
+        }
+    }
+
+    struct TransparentSeq<'a, T: Transparent + 'a> {
+        out: &'a mut Option<T>,
+        value: Box<Option<T::Inner>>,
+        seq: Box<dyn Seq + 'a>,
+    }
+
+    impl<'a, T: Transparent> Seq for TransparentSeq<'a, T> {
+        fn element(&mut self) -> Result<&mut dyn Visitor> {
+            self.seq.element()
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            self.seq.finish()?;
+            *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
+            Ok(())
+        }
+    }
+
+    struct TransparentMap<'a, T: Transparent + 'a> {
+        out: &'a mut Option<T>,
+        value: Box<Option<T::Inner>>,
+        map: Box<dyn Map + 'a>,
+    }
+
+    impl<'a, T: Transparent> Map for TransparentMap<'a, T> {
+        fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
+            self.map.key(k)
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            self.map.finish()?;
+            *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
+            Ok(())
+        }
+    }
+
+    Place::new(out)
+}

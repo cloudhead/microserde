@@ -4,6 +4,8 @@ use crate::lib::*;
 use std::collections::{hash_map, HashMap};
 #[cfg(feature = "std")]
 use std::hash::{BuildHasher, Hash};
+#[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
 
 use crate::private;
 use crate::ser::{Fragment, Map, Seq, Serialize};
@@ -29,6 +31,20 @@ impl Serialize for str {
 impl Serialize for String {
     fn begin(&self) -> Fragment {
         Fragment::Str(Cow::Borrowed(self))
+    }
+}
+
+#[cfg(feature = "std")]
+impl Serialize for Path {
+    fn begin(&self) -> Fragment<'_> {
+        Fragment::Str(self.to_string_lossy())
+    }
+}
+
+#[cfg(feature = "std")]
+impl Serialize for PathBuf {
+    fn begin(&self) -> Fragment<'_> {
+        self.as_path().begin()
     }
 }
 

@@ -2,21 +2,33 @@ use crate::{attr, bound};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    parse_quote, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, FieldsNamed, Result,
+    parse_quote, Data, DataEnum, DeriveInput, Error, Fields, FieldsNamed, FieldsUnnamed, Result,
 };
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     match &input.data {
-        Data::Struct(DataStruct {
-            fields: Fields::Named(fields),
-            ..
-        }) => derive_struct(&input, fields),
+        Data::Struct(data) => match attr::struct_kind(&input.attrs, data)? {
+            attr::StructKind::Transparent(fields) => derive_transparent_struct(&input, fields),
+            attr::StructKind::Named(fields) => derive_struct(&input, fields),
+        },
         Data::Enum(enumeration) => derive_enum(&input, enumeration),
-        _ => Err(Error::new(
-            Span::call_site(),
-            "currently only structs with named fields are supported",
-        )),
+        _ => Err(Error::new(Span::call_site(), "unsupported derive input")),
     }
+}
+
+fn derive_transparent_struct(input: &DeriveInput, _fields: &FieldsUnnamed) -> Result<TokenStream> {
+    let ident = &input.ident;
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
+    let bound = parse_quote!(microserde::Serialize);
+    let bounded_where_clause = bound::where_clause_with_bound(&input.generics, bound);
+
+    Ok(quote! {
+        impl #impl_generics microserde::Serialize for #ident #ty_generics #bounded_where_clause {
+            fn begin(&self) -> microserde::ser::Fragment {
+                self.0.begin()
+            }
+        }
+    })
 }
 
 fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {

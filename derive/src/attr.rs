@@ -1,5 +1,75 @@
 use proc_macro2::Span;
-use syn::{Attribute, Error, Field, Lit, Meta, NestedMeta, Result, Variant};
+use syn::{
+    Attribute, DataStruct, Error, Field, Fields, FieldsNamed, FieldsUnnamed, Lit, Meta, NestedMeta,
+    Result, Variant,
+};
+
+/// Supported `#[serde(...)]` attributes on a struct.
+pub struct StructAttrs {
+    /// Whether a one-field struct serializes as its field.
+    pub transparent: bool,
+}
+
+/// Supported struct representation.
+pub enum StructKind<'a> {
+    /// `#[serde(transparent)]` tuple newtype.
+    Transparent(&'a FieldsUnnamed),
+    /// Ordinary named-field struct.
+    Named(&'a FieldsNamed),
+}
+
+/// Find supported #[serde(...)] struct attributes.
+pub fn struct_attrs(attrs: &[Attribute]) -> Result<StructAttrs> {
+    let mut transparent = false;
+
+    for attr in attrs {
+        if !attr.path.is_ident("serde") {
+            continue;
+        }
+
+        let list = match attr.parse_meta()? {
+            Meta::List(list) => list,
+            other => return Err(Error::new_spanned(other, "unsupported attribute")),
+        };
+
+        for meta in &list.nested {
+            if let NestedMeta::Meta(Meta::Path(path)) = meta {
+                if path.is_ident("transparent") {
+                    if transparent {
+                        return Err(Error::new_spanned(meta, "duplicate transparent attribute"));
+                    }
+                    transparent = true;
+                    continue;
+                }
+            }
+            return Err(Error::new_spanned(meta, "unsupported attribute"));
+        }
+    }
+    Ok(StructAttrs { transparent })
+}
+
+/// Classify a struct according to supported serde attributes.
+pub fn struct_kind<'a>(attrs: &[Attribute], input: &'a DataStruct) -> Result<StructKind<'a>> {
+    let attrs = struct_attrs(attrs)?;
+    if attrs.transparent {
+        match &input.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                Ok(StructKind::Transparent(fields))
+            }
+            _ => Err(Error::new_spanned(
+                &input.fields,
+                "transparent structs must be tuple structs with exactly one field",
+            )),
+        }
+    } else if let Fields::Named(fields) = &input.fields {
+        Ok(StructKind::Named(fields))
+    } else {
+        Err(Error::new_spanned(
+            &input.fields,
+            "currently only structs with named fields are supported",
+        ))
+    }
+}
 
 /// Supported `#[serde(...)]` attributes on a struct field.
 pub struct FieldAttrs {
