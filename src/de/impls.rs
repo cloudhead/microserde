@@ -8,15 +8,21 @@ use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::path::PathBuf;
 
-use crate::de::{Deserialize, Map, Seq, Visitor};
+use crate::de::{
+    transparent, Deserialize, Map, Place, Scalar, Seq, Transparent, TransparentVisitor, Visitor,
+};
 use crate::error::{Error, Result};
-use crate::Place;
 
 impl Deserialize for () {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl Visitor for Place<()> {
-            fn null(&mut self) -> Result<()> {
-                self.out = Some(());
+    type Visitor<'a> = Place<'a, ()>;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl Visitor for Place<'_, ()> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                let Scalar::Null = s else {
+                    return Err(Error);
+                };
+                *self.out = Some(());
                 Ok(())
             }
         }
@@ -25,10 +31,15 @@ impl Deserialize for () {
 }
 
 impl Deserialize for bool {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl Visitor for Place<bool> {
-            fn boolean(&mut self, b: bool) -> Result<()> {
-                self.out = Some(b);
+    type Visitor<'a> = Place<'a, bool>;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl Visitor for Place<'_, bool> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                let Scalar::Bool(b) = *s else {
+                    return Err(Error);
+                };
+                *self.out = Some(b);
                 Ok(())
             }
         }
@@ -37,10 +48,15 @@ impl Deserialize for bool {
 }
 
 impl Deserialize for String {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl Visitor for Place<String> {
-            fn string(&mut self, s: &str) -> Result<()> {
-                self.out = Some(s.to_owned());
+    type Visitor<'a> = Place<'a, String>;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl Visitor for Place<'_, String> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                let Scalar::Str(s) = s else {
+                    return Err(Error);
+                };
+                *self.out = Some((*s).to_owned());
                 Ok(())
             }
         }
@@ -50,10 +66,15 @@ impl Deserialize for String {
 
 #[cfg(feature = "std")]
 impl Deserialize for PathBuf {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl Visitor for Place<PathBuf> {
-            fn string(&mut self, s: &str) -> Result<()> {
-                self.out = Some(PathBuf::from(s));
+    type Visitor<'a> = Place<'a, PathBuf>;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl Visitor for Place<'_, PathBuf> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                let Scalar::Str(s) = s else {
+                    return Err(Error);
+                };
+                *self.out = Some(PathBuf::from(s));
                 Ok(())
             }
         }
@@ -64,23 +85,21 @@ impl Deserialize for PathBuf {
 macro_rules! signed {
     ($ty:ident) => {
         impl Deserialize for $ty {
-            fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-                impl Visitor for Place<$ty> {
-                    fn negative(&mut self, n: i64) -> Result<()> {
-                        if n >= $ty::min_value() as i64 {
-                            self.out = Some(n as $ty);
-                            Ok(())
-                        } else {
-                            Err(Error)
-                        }
-                    }
+            type Visitor<'a> = Place<'a, $ty>;
 
-                    fn nonnegative(&mut self, n: u64) -> Result<()> {
-                        if n <= $ty::max_value() as u64 {
-                            self.out = Some(n as $ty);
-                            Ok(())
-                        } else {
-                            Err(Error)
+            fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+                impl Visitor for Place<'_, $ty> {
+                    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                        match *s {
+                            Scalar::Negative(n) if n >= $ty::MIN as i64 => {
+                                *self.out = Some(n as $ty);
+                                Ok(())
+                            }
+                            Scalar::Nonnegative(n) if n <= $ty::MAX as u64 => {
+                                *self.out = Some(n as $ty);
+                                Ok(())
+                            }
+                            _ => Err(Error),
                         }
                     }
                 }
@@ -98,14 +117,17 @@ signed!(isize);
 macro_rules! unsigned {
     ($ty:ident) => {
         impl Deserialize for $ty {
-            fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-                impl Visitor for Place<$ty> {
-                    fn nonnegative(&mut self, n: u64) -> Result<()> {
-                        if n <= $ty::max_value() as u64 {
-                            self.out = Some(n as $ty);
-                            Ok(())
-                        } else {
-                            Err(Error)
+            type Visitor<'a> = Place<'a, $ty>;
+
+            fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+                impl Visitor for Place<'_, $ty> {
+                    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                        match *s {
+                            Scalar::Nonnegative(n) if n <= $ty::MAX as u64 => {
+                                *self.out = Some(n as $ty);
+                                Ok(())
+                            }
+                            _ => Err(Error),
                         }
                     }
                 }
@@ -123,20 +145,18 @@ unsigned!(usize);
 macro_rules! float {
     ($ty:ident) => {
         impl Deserialize for $ty {
-            fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-                impl Visitor for Place<$ty> {
-                    fn negative(&mut self, n: i64) -> Result<()> {
-                        self.out = Some(n as $ty);
-                        Ok(())
-                    }
+            type Visitor<'a> = Place<'a, $ty>;
 
-                    fn nonnegative(&mut self, n: u64) -> Result<()> {
-                        self.out = Some(n as $ty);
-                        Ok(())
-                    }
-
-                    fn float(&mut self, n: f64) -> Result<()> {
-                        self.out = Some(n as $ty);
+            fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+                impl Visitor for Place<'_, $ty> {
+                    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                        let n = match *s {
+                            Scalar::Negative(n) => n as $ty,
+                            Scalar::Nonnegative(n) => n as $ty,
+                            Scalar::Float(n) => n as $ty,
+                            _ => return Err(Error),
+                        };
+                        *self.out = Some(n);
                         Ok(())
                     }
                 }
@@ -148,157 +168,64 @@ macro_rules! float {
 float!(f32);
 float!(f64);
 
+// A boxed value deserializes like the inner value; `Box<T>` is a transparent
+// wrapper around `T`.
+impl<T: Deserialize> Transparent for Box<T> {
+    type Inner = T;
+
+    fn wrap(inner: T) -> Self {
+        Box::new(inner)
+    }
+}
+
 impl<T: Deserialize> Deserialize for Box<T> {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<T: Deserialize> Visitor for Place<Box<T>> {
-            fn null(&mut self) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).null()?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
+    type Visitor<'a>
+        = TransparentVisitor<'a, Box<T>>
+    where
+        Self: 'a;
 
-            fn boolean(&mut self, b: bool) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).boolean(b)?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
-
-            fn string(&mut self, s: &str) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).string(s)?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
-
-            fn negative(&mut self, n: i64) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).negative(n)?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
-
-            fn nonnegative(&mut self, n: u64) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).nonnegative(n)?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
-
-            fn float(&mut self, n: f64) -> Result<()> {
-                let mut out = None;
-                Deserialize::begin(&mut out).float(n)?;
-                self.out = Some(Box::new(out.unwrap()));
-                Ok(())
-            }
-
-            fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
-                let mut value = Box::new(None);
-                let ptr = careful!(&mut *value as &mut Option<T>);
-                Ok(Box::new(BoxSeq {
-                    out: &mut self.out,
-                    value,
-                    seq: Deserialize::begin(ptr).seq()?,
-                }))
-            }
-
-            fn map(&mut self) -> Result<Box<dyn Map + '_>> {
-                let mut value = Box::new(None);
-                let ptr = careful!(&mut *value as &mut Option<T>);
-                Ok(Box::new(BoxMap {
-                    out: &mut self.out,
-                    value,
-                    map: Deserialize::begin(ptr).map()?,
-                }))
-            }
-        }
-
-        struct BoxSeq<'a, T: 'a> {
-            out: &'a mut Option<Box<T>>,
-            value: Box<Option<T>>,
-            seq: Box<dyn Seq + 'a>,
-        }
-
-        impl<'a, T: Deserialize> Seq for BoxSeq<'a, T> {
-            fn element(&mut self) -> Result<&mut dyn Visitor> {
-                self.seq.element()
-            }
-
-            fn finish(&mut self) -> Result<()> {
-                self.seq.finish()?;
-                *self.out = Some(Box::new(self.value.take().unwrap()));
-                Ok(())
-            }
-        }
-
-        struct BoxMap<'a, T: 'a> {
-            out: &'a mut Option<Box<T>>,
-            value: Box<Option<T>>,
-            map: Box<dyn Map + 'a>,
-        }
-
-        impl<'a, T: Deserialize> Map for BoxMap<'a, T> {
-            fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
-                self.map.key(k)
-            }
-
-            fn finish(&mut self) -> Result<()> {
-                self.map.finish()?;
-                *self.out = Some(Box::new(self.value.take().unwrap()));
-                Ok(())
-            }
-        }
-
-        Place::new(out)
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        transparent(out)
     }
 }
 
 impl<T: Deserialize> Deserialize for Option<T> {
+    type Visitor<'a>
+        = Place<'a, Option<T>>
+    where
+        Self: 'a;
+
     #[inline]
     fn default() -> Option<Self> {
         Some(None)
     }
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<T: Deserialize> Visitor for Place<Option<T>> {
-            fn null(&mut self) -> Result<()> {
-                self.out = Some(None);
-                Ok(())
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl<T: Deserialize> Visitor for Place<'_, Option<T>> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                match s {
+                    Scalar::Null => {
+                        *self.out = Some(None);
+                        Ok(())
+                    }
+                    _ => Deserialize::begin(self.out.insert(None)).scalar(s),
+                }
             }
 
-            fn boolean(&mut self, b: bool) -> Result<()> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).boolean(b)
+            fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+            where
+                Self: 's,
+            {
+                let out = self.out;
+                Box::new(Deserialize::begin(out.insert(None))).seq()
             }
 
-            fn string(&mut self, s: &str) -> Result<()> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).string(s)
-            }
-
-            fn negative(&mut self, n: i64) -> Result<()> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).negative(n)
-            }
-
-            fn nonnegative(&mut self, n: u64) -> Result<()> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).nonnegative(n)
-            }
-
-            fn float(&mut self, n: f64) -> Result<()> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).float(n)
-            }
-
-            fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).seq()
-            }
-
-            fn map(&mut self) -> Result<Box<dyn Map + '_>> {
-                self.out = Some(None);
-                Deserialize::begin(self.out.as_mut().unwrap()).map()
+            fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+            where
+                Self: 's,
+            {
+                let out = self.out;
+                Box::new(Deserialize::begin(out.insert(None))).map()
             }
         }
 
@@ -307,11 +234,19 @@ impl<T: Deserialize> Deserialize for Option<T> {
 }
 
 impl<A: Deserialize, B: Deserialize> Deserialize for (A, B) {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<A: Deserialize, B: Deserialize> Visitor for Place<(A, B)> {
-            fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
+    type Visitor<'a>
+        = Place<'a, (A, B)>
+    where
+        Self: 'a;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl<A: Deserialize, B: Deserialize> Visitor for Place<'_, (A, B)> {
+            fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(TupleBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     tuple: (None, None),
                 }))
             }
@@ -323,11 +258,11 @@ impl<A: Deserialize, B: Deserialize> Deserialize for (A, B) {
         }
 
         impl<'a, A: Deserialize, B: Deserialize> Seq for TupleBuilder<'a, A, B> {
-            fn element(&mut self) -> Result<&mut dyn Visitor> {
+            fn element(&mut self) -> Result<Box<dyn Visitor + '_>> {
                 if self.tuple.0.is_none() {
-                    Ok(Deserialize::begin(&mut self.tuple.0))
+                    Ok(Box::new(Deserialize::begin(&mut self.tuple.0)))
                 } else if self.tuple.1.is_none() {
-                    Ok(Deserialize::begin(&mut self.tuple.1))
+                    Ok(Box::new(Deserialize::begin(&mut self.tuple.1)))
                 } else {
                     Err(Error)
                 }
@@ -341,6 +276,16 @@ impl<A: Deserialize, B: Deserialize> Deserialize for (A, B) {
                     Err(Error)
                 }
             }
+
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                if self.tuple.0.is_none() {
+                    Deserialize::begin(&mut self.tuple.0).scalar(s)
+                } else if self.tuple.1.is_none() {
+                    Deserialize::begin(&mut self.tuple.1).scalar(s)
+                } else {
+                    Err(Error)
+                }
+            }
         }
 
         Place::new(out)
@@ -348,11 +293,19 @@ impl<A: Deserialize, B: Deserialize> Deserialize for (A, B) {
 }
 
 impl<T: Deserialize> Deserialize for Vec<T> {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<T: Deserialize> Visitor for Place<Vec<T>> {
-            fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
+    type Visitor<'a>
+        = Place<'a, Vec<T>>
+    where
+        Self: 'a;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl<T: Deserialize> Visitor for Place<'_, Vec<T>> {
+            fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(VecBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     vec: Vec::new(),
                     element: None,
                 }))
@@ -374,15 +327,20 @@ impl<T: Deserialize> Deserialize for Vec<T> {
         }
 
         impl<'a, T: Deserialize> Seq for VecBuilder<'a, T> {
-            fn element(&mut self) -> Result<&mut dyn Visitor> {
+            fn element(&mut self) -> Result<Box<dyn Visitor + '_>> {
                 self.shift();
-                Ok(Deserialize::begin(&mut self.element))
+                Ok(Box::new(Deserialize::begin(&mut self.element)))
             }
 
             fn finish(&mut self) -> Result<()> {
                 self.shift();
-                *self.out = Some(mem::replace(&mut self.vec, Vec::new()));
+                *self.out = Some(mem::take(&mut self.vec));
                 Ok(())
+            }
+
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                self.shift();
+                Deserialize::begin(&mut self.element).scalar(s)
             }
         }
 
@@ -397,16 +355,24 @@ where
     V: Deserialize,
     H: BuildHasher + Default,
 {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<K, V, H> Visitor for Place<HashMap<K, V, H>>
+    type Visitor<'a>
+        = Place<'a, HashMap<K, V, H>>
+    where
+        Self: 'a;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl<K, V, H> Visitor for Place<'_, HashMap<K, V, H>>
         where
             K: FromStr + Hash + Eq,
             V: Deserialize,
             H: BuildHasher + Default,
         {
-            fn map(&mut self) -> Result<Box<dyn Map + '_>> {
+            fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(MapBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     map: HashMap::with_hasher(H::default()),
                     key: None,
                     value: None,
@@ -421,11 +387,24 @@ where
             value: Option<V>,
         }
 
-        impl<'a, K: Hash + Eq, V, H: BuildHasher> MapBuilder<'a, K, V, H> {
+        impl<'a, K, V, H> MapBuilder<'a, K, V, H>
+        where
+            K: FromStr + Hash + Eq,
+            H: BuildHasher,
+        {
             fn shift(&mut self) {
                 if let (Some(k), Some(v)) = (self.key.take(), self.value.take()) {
                     self.map.insert(k, v);
                 }
+            }
+
+            fn parse_key(&mut self, k: &str) -> Result<()> {
+                self.shift();
+                self.key = Some(match K::from_str(k) {
+                    Ok(key) => key,
+                    Err(_) => return Err(Error),
+                });
+                Ok(())
             }
         }
 
@@ -435,13 +414,9 @@ where
             V: Deserialize,
             H: BuildHasher + Default,
         {
-            fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
-                self.shift();
-                self.key = Some(match K::from_str(k) {
-                    Ok(key) => key,
-                    Err(_) => return Err(Error),
-                });
-                Ok(Deserialize::begin(&mut self.value))
+            fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>> {
+                self.parse_key(k)?;
+                Ok(Box::new(Deserialize::begin(&mut self.value)))
             }
 
             fn finish(&mut self) -> Result<()> {
@@ -450,6 +425,11 @@ where
                 *self.out = Some(mem::replace(&mut self.map, substitute));
                 Ok(())
             }
+
+            fn scalar(&mut self, k: &str, s: &Scalar) -> Result<()> {
+                self.parse_key(k)?;
+                Deserialize::begin(&mut self.value).scalar(s)
+            }
         }
 
         Place::new(out)
@@ -457,11 +437,19 @@ where
 }
 
 impl<K: FromStr + Ord, V: Deserialize> Deserialize for BTreeMap<K, V> {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl<K: FromStr + Ord, V: Deserialize> Visitor for Place<BTreeMap<K, V>> {
-            fn map(&mut self) -> Result<Box<dyn Map + '_>> {
+    type Visitor<'a>
+        = Place<'a, BTreeMap<K, V>>
+    where
+        Self: 'a;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl<K: FromStr + Ord, V: Deserialize> Visitor for Place<'_, BTreeMap<K, V>> {
+            fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(MapBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     map: BTreeMap::new(),
                     key: None,
                     value: None,
@@ -476,28 +464,38 @@ impl<K: FromStr + Ord, V: Deserialize> Deserialize for BTreeMap<K, V> {
             value: Option<V>,
         }
 
-        impl<'a, K: Ord, V> MapBuilder<'a, K, V> {
+        impl<'a, K: FromStr + Ord, V> MapBuilder<'a, K, V> {
             fn shift(&mut self) {
                 if let (Some(k), Some(v)) = (self.key.take(), self.value.take()) {
                     self.map.insert(k, v);
                 }
             }
-        }
 
-        impl<'a, K: FromStr + Ord, V: Deserialize> Map for MapBuilder<'a, K, V> {
-            fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
+            fn parse_key(&mut self, k: &str) -> Result<()> {
                 self.shift();
                 self.key = Some(match K::from_str(k) {
                     Ok(key) => key,
                     Err(_) => return Err(Error),
                 });
-                Ok(Deserialize::begin(&mut self.value))
+                Ok(())
+            }
+        }
+
+        impl<'a, K: FromStr + Ord, V: Deserialize> Map for MapBuilder<'a, K, V> {
+            fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>> {
+                self.parse_key(k)?;
+                Ok(Box::new(Deserialize::begin(&mut self.value)))
             }
 
             fn finish(&mut self) -> Result<()> {
                 self.shift();
-                *self.out = Some(mem::replace(&mut self.map, BTreeMap::new()));
+                *self.out = Some(mem::take(&mut self.map));
                 Ok(())
+            }
+
+            fn scalar(&mut self, k: &str, s: &Scalar) -> Result<()> {
+                self.parse_key(k)?;
+                Deserialize::begin(&mut self.value).scalar(s)
             }
         }
 

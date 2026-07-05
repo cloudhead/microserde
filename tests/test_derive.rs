@@ -52,6 +52,25 @@ struct WithPath {
     path: PathBuf,
 }
 
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+struct GenericStruct<T> {
+    value: T,
+    values: Vec<T>,
+}
+
+// Public types exercise E0446: the derived visitor is named by the public
+// `Deserialize::Visitor` associated type and must not be a leaked private
+// type.
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+pub struct PublicStruct {
+    pub value: u32,
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+pub enum PublicTag {
+    A,
+}
+
 #[test]
 fn test_de() {
     let j = r#" {"x": "X", "t1": "A", "t2": "renamedB", "n": {"y": ["Y", "Y"]}} "#;
@@ -154,6 +173,41 @@ fn test_transparent_map() {
             y: Some(vec!["Y".to_owned()]),
             z: Some("Z".to_owned())
         })
+    );
+}
+
+#[test]
+fn test_boxed() {
+    let boxed: Box<u32> = json::from_str("1").unwrap();
+    assert_eq!(*boxed, 1);
+
+    let boxed: Box<Vec<String>> = json::from_str(r#"["a","b"]"#).unwrap();
+    assert_eq!(*boxed, vec!["a".to_owned(), "b".to_owned()]);
+
+    let boxed: Box<Nested> = json::from_str(r#"{"y":["Y"],"z":"Z"}"#).unwrap();
+    assert_eq!(
+        *boxed,
+        Nested {
+            y: Some(vec!["Y".to_owned()]),
+            z: Some("Z".to_owned()),
+        }
+    );
+
+    assert!(json::from_str::<Box<u32>>("true").is_err());
+}
+
+#[test]
+fn test_generic_struct() {
+    let expected = GenericStruct {
+        value: "a".to_owned(),
+        values: vec!["b".to_owned(), "c".to_owned()],
+    };
+    let actual = json::to_string(&expected);
+
+    assert_eq!(actual, r#"{"value":"a","values":["b","c"]}"#);
+    assert_eq!(
+        json::from_str::<GenericStruct<String>>(&actual).unwrap(),
+        expected
     );
 }
 

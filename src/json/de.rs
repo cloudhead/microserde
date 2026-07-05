@@ -3,8 +3,8 @@ use crate::lib::mem;
 use crate::lib::str;
 use crate::lib::{Box, Vec};
 
-use self::Event::*;
-use crate::de::{Deserialize, Map, Seq, Visitor};
+use crate::de::Scalar::{Float, Negative, Nonnegative};
+use crate::de::{Deserialize, Map, Scalar, Seq, Visitor};
 use crate::error::{Error, Result};
 
 /// Deserialize a JSON string into any deserializable type.
@@ -29,15 +29,19 @@ use crate::error::{Error, Result};
 /// ```
 pub fn from_str<T: Deserialize>(j: &str) -> Result<T> {
     let mut out = None;
-    from_str_impl(j, T::begin(&mut out))?;
+    from_str_impl(j, Box::new(T::begin(&mut out)))?;
     out.ok_or(Error)
 }
 
 struct Deserializer<'a, 'b> {
-    input: &'a [u8],
-    pos: usize,
+    cursor: Cursor<'a>,
+    /// Scratch space for value strings containing escape sequences.
     buffer: Vec<u8>,
-    stack: Vec<(&'b mut dyn Visitor, Layer<'b>)>,
+    /// Scratch space for map keys containing escape sequences. Separate from
+    /// `buffer` so that a key and the scalar value that follows it can be
+    /// borrowed at the same time.
+    key_buffer: Vec<u8>,
+    stack: Vec<Layer<'b>>,
 }
 
 enum Layer<'a> {
@@ -45,95 +49,79 @@ enum Layer<'a> {
     Map(Box<dyn Map + 'a>),
 }
 
+impl<'a> Layer<'a> {
+    /// Opens the sequence or map started by the given event, writing into the
+    /// given visitor.
+    fn open(visitor: Box<dyn Visitor + 'a>, event: &Event) -> Result<Layer<'a>> {
+        match event {
+            Event::SeqStart => Ok(Layer::Seq(visitor.seq()?)),
+            Event::MapStart => Ok(Layer::Map(visitor.map()?)),
+            Event::Scalar(_) => Err(Error),
+        }
+    }
+}
+
 impl<'a, 'b> Drop for Deserializer<'a, 'b> {
     fn drop(&mut self) {
-        // Drop layers in reverse order.
+        // Drop layers in reverse order: each layer's builder may borrow from
+        // the builders below it on the stack.
         while !self.stack.is_empty() {
             self.stack.pop();
         }
     }
 }
 
-fn from_str_impl(j: &str, mut visitor: &mut dyn Visitor) -> Result<()> {
+enum Event<'a> {
+    Scalar(Scalar<'a>),
+    SeqStart,
+    MapStart,
+}
+
+fn from_str_impl(j: &str, visitor: Box<dyn Visitor + '_>) -> Result<()> {
+    let mut visitor = careful!(visitor as Box<dyn Visitor>);
     let mut de = Deserializer {
-        input: j.as_bytes(),
-        pos: 0,
+        cursor: Cursor {
+            input: j.as_bytes(),
+            pos: 0,
+        },
         buffer: Vec::new(),
+        key_buffer: Vec::new(),
         stack: Vec::new(),
     };
 
-    'outer: loop {
-        let layer = match de.event()? {
-            Null => {
-                visitor.null()?;
-                None
-            }
-            Bool(b) => {
-                visitor.boolean(b)?;
-                None
-            }
-            Negative(n) => {
-                visitor.negative(n)?;
-                None
-            }
-            Nonnegative(n) => {
-                visitor.nonnegative(n)?;
-                None
-            }
-            Float(n) => {
-                visitor.float(n)?;
-                None
-            }
-            Str(s) => {
-                visitor.string(s)?;
-                None
-            }
-            SeqStart => {
-                let seq = careful!(visitor.seq()? as Box<dyn Seq>);
-                Some(Layer::Seq(seq))
-            }
-            MapStart => {
-                let map = careful!(visitor.map()? as Box<dyn Map>);
-                Some(Layer::Map(map))
-            }
-        };
+    // Read the root value.
+    let event = de.cursor.event(&mut de.buffer)?;
+    let mut layer = match &event {
+        Event::Scalar(s) => {
+            visitor.scalar(s)?;
+            return de.cursor.expect_eof();
+        }
+        event => Layer::open(visitor, event)?,
+    };
+    let mut accept_comma = false;
 
-        let mut accept_comma;
-        let mut layer = match layer {
-            Some(layer) => {
-                accept_comma = false;
-                layer
-            }
-            None => match de.stack.pop() {
-                Some(frame) => {
-                    accept_comma = true;
-                    visitor = frame.0;
-                    frame.1
-                }
-                None => break 'outer,
-            },
-        };
-
+    loop {
+        // Handle commas and closing brackets.
         loop {
-            match de.parse_whitespace().unwrap_or(b'\0') {
+            match de.cursor.parse_whitespace().unwrap_or(b'\0') {
                 b',' if accept_comma => {
-                    de.bump();
+                    de.cursor.bump();
                     break;
                 }
                 close @ b']' | close @ b'}' => {
-                    de.bump();
+                    de.cursor.bump();
                     match &mut layer {
                         Layer::Seq(seq) if close == b']' => seq.finish()?,
                         Layer::Map(map) if close == b'}' => map.finish()?,
                         _ => return Err(Error),
                     };
-                    let frame = match de.stack.pop() {
-                        Some(frame) => frame,
-                        None => break 'outer,
+                    // The assignment drops the finished layer before its
+                    // parent, preserving reverse drop order.
+                    layer = match de.stack.pop() {
+                        Some(parent) => parent,
+                        None => return de.cursor.expect_eof(),
                     };
                     accept_comma = true;
-                    visitor = frame.0;
-                    layer = frame.1;
                 }
                 _ => {
                     if accept_comma {
@@ -145,46 +133,55 @@ fn from_str_impl(j: &str, mut visitor: &mut dyn Visitor) -> Result<()> {
             }
         }
 
-        match layer {
-            Layer::Seq(mut seq) => {
-                let inner = careful!(seq.element()? as &mut dyn Visitor);
-                let outer = mem::replace(&mut visitor, inner);
-                de.stack.push((outer, Layer::Seq(seq)));
+        // Read one element or entry into the current layer. Scalars are
+        // written directly through the layer; sequences and maps open a new
+        // layer that becomes the current one.
+        let inner = match &mut layer {
+            Layer::Seq(seq) => {
+                let event = de.cursor.event(&mut de.buffer)?;
+                match &event {
+                    Event::Scalar(s) => {
+                        seq.scalar(s)?;
+                        None
+                    }
+                    event => {
+                        let visitor = careful!(seq.element()? as Box<dyn Visitor>);
+                        Some(Layer::open(visitor, event)?)
+                    }
+                }
             }
-            Layer::Map(mut map) => {
-                match de.parse_whitespace() {
-                    Some(b'"') => de.bump(),
+            Layer::Map(map) => {
+                match de.cursor.parse_whitespace() {
+                    Some(b'"') => de.cursor.bump(),
                     _ => return Err(Error),
                 }
-                let inner = {
-                    let k = de.parse_str()?;
-                    careful!(map.key(k)? as &mut dyn Visitor)
-                };
-                match de.parse_whitespace() {
-                    Some(b':') => de.bump(),
+                let k = de.cursor.parse_str(&mut de.key_buffer)?;
+                match de.cursor.parse_whitespace() {
+                    Some(b':') => de.cursor.bump(),
                     _ => return Err(Error),
                 }
-                let outer = mem::replace(&mut visitor, inner);
-                de.stack.push((outer, Layer::Map(map)));
+                let event = de.cursor.event(&mut de.buffer)?;
+                match &event {
+                    Event::Scalar(s) => {
+                        map.scalar(k, s)?;
+                        None
+                    }
+                    event => {
+                        let visitor = careful!(map.key(k)? as Box<dyn Visitor>);
+                        Some(Layer::open(visitor, event)?)
+                    }
+                }
+            }
+        };
+
+        match inner {
+            None => accept_comma = true,
+            Some(inner) => {
+                de.stack.push(mem::replace(&mut layer, inner));
+                accept_comma = false;
             }
         }
     }
-
-    match de.parse_whitespace() {
-        Some(_) => Err(Error),
-        None => Ok(()),
-    }
-}
-
-enum Event<'a> {
-    Null,
-    Bool(bool),
-    Str(&'a str),
-    Negative(i64),
-    Nonnegative(u64),
-    Float(f64),
-    SeqStart,
-    MapStart,
 }
 
 macro_rules! overflow {
@@ -193,7 +190,12 @@ macro_rules! overflow {
     };
 }
 
-impl<'a, 'b> Deserializer<'a, 'b> {
+struct Cursor<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
     fn next(&mut self) -> Option<u8> {
         if self.pos < self.input.len() {
             let ch = self.input[self.pos];
@@ -224,42 +226,54 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         self.pos += 1;
     }
 
-    fn parse_str(&mut self) -> Result<&str> {
+    /// Fails if anything other than whitespace remains.
+    fn expect_eof(&mut self) -> Result<()> {
+        match self.parse_whitespace() {
+            Some(_) => Err(Error),
+            None => Ok(()),
+        }
+    }
+
+    fn parse_str<'s>(&mut self, scratch: &'s mut Vec<u8>) -> Result<&'s str>
+    where
+        'a: 's,
+    {
         fn result(bytes: &[u8]) -> &str {
             // The input is assumed to be valid UTF-8 and the \u-escapes are
             // checked along the way, so don't need to check here.
             unsafe { str::from_utf8_unchecked(bytes) }
         }
 
+        let input = self.input;
         // Index of the first byte not yet copied into the scratch space.
         let mut start = self.pos;
-        self.buffer.clear();
+        scratch.clear();
 
         loop {
-            while self.pos < self.input.len() && !ESCAPE[usize::from(self.input[self.pos])] {
+            while self.pos < input.len() && !ESCAPE[usize::from(input[self.pos])] {
                 self.pos += 1;
             }
-            if self.pos == self.input.len() {
+            if self.pos == input.len() {
                 return Err(Error);
             }
-            match self.input[self.pos] {
+            match input[self.pos] {
                 b'"' => {
-                    if self.buffer.is_empty() {
+                    if scratch.is_empty() {
                         // Fast path: return a slice of the raw JSON without any
                         // copying.
-                        let borrowed = &self.input[start..self.pos];
+                        let borrowed = &input[start..self.pos];
                         self.pos += 1;
                         return Ok(result(borrowed));
                     } else {
-                        self.buffer.extend_from_slice(&self.input[start..self.pos]);
+                        scratch.extend_from_slice(&input[start..self.pos]);
                         self.pos += 1;
-                        return Ok(result(&self.buffer));
+                        return Ok(result(scratch));
                     }
                 }
                 b'\\' => {
-                    self.buffer.extend_from_slice(&self.input[start..self.pos]);
+                    scratch.extend_from_slice(&input[start..self.pos]);
                     self.pos += 1;
-                    self.parse_escape()?;
+                    self.parse_escape(scratch)?;
                     start = self.pos;
                 }
                 _ => {
@@ -275,18 +289,18 @@ impl<'a, 'b> Deserializer<'a, 'b> {
 
     /// Parses a JSON escape sequence and appends it into the scratch space. Assumes
     /// the previous byte read was a backslash.
-    fn parse_escape(&mut self) -> Result<()> {
+    fn parse_escape(&mut self, scratch: &mut Vec<u8>) -> Result<()> {
         let ch = self.next_or_eof()?;
 
         match ch {
-            b'"' => self.buffer.push(b'"'),
-            b'\\' => self.buffer.push(b'\\'),
-            b'/' => self.buffer.push(b'/'),
-            b'b' => self.buffer.push(b'\x08'),
-            b'f' => self.buffer.push(b'\x0c'),
-            b'n' => self.buffer.push(b'\n'),
-            b'r' => self.buffer.push(b'\r'),
-            b't' => self.buffer.push(b'\t'),
+            b'"' => scratch.push(b'"'),
+            b'\\' => scratch.push(b'\\'),
+            b'/' => scratch.push(b'/'),
+            b'b' => scratch.push(b'\x08'),
+            b'f' => scratch.push(b'\x0c'),
+            b'n' => scratch.push(b'\n'),
+            b'r' => scratch.push(b'\r'),
+            b't' => scratch.push(b'\t'),
             b'u' => {
                 let c = match self.decode_hex_escape()? {
                     0xDC00..=0xDFFF => {
@@ -327,8 +341,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
                     },
                 };
 
-                self.buffer
-                    .extend_from_slice(c.encode_utf8(&mut [0_u8; 4]).as_bytes());
+                scratch.extend_from_slice(c.encode_utf8(&mut [0_u8; 4]).as_bytes());
             }
             _ => {
                 return Err(Error);
@@ -386,7 +399,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         Ok(())
     }
 
-    fn parse_integer(&mut self, nonnegative: bool, first_digit: u8) -> Result<Event> {
+    fn parse_integer(&mut self, nonnegative: bool, first_digit: u8) -> Result<Scalar<'a>> {
         match first_digit {
             b'0' => {
                 // There can be only one leading '0'.
@@ -407,7 +420,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
                             // We need to be careful with overflow. If we can, try to keep the
                             // number as a `u64` until we grow too large. At that point, switch to
                             // parsing the value as a `f64`.
-                            if overflow!(res * 10 + digit, u64::max_value()) {
+                            if overflow!(res * 10 + digit, u64::MAX) {
                                 return self
                                     .parse_long_integer(
                                         nonnegative,
@@ -456,7 +469,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         }
     }
 
-    fn parse_number(&mut self, nonnegative: bool, significand: u64) -> Result<Event> {
+    fn parse_number(&mut self, nonnegative: bool, significand: u64) -> Result<Scalar<'a>> {
         match self.peek_or_nul() {
             b'.' => self.parse_decimal(nonnegative, significand, 0).map(Float),
             b'e' | b'E' => self.parse_exponent(nonnegative, significand, 0).map(Float),
@@ -491,7 +504,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
             let digit = u64::from(c - b'0');
             at_least_one_digit = true;
 
-            if overflow!(significand * 10 + digit, u64::max_value()) {
+            if overflow!(significand * 10 + digit, u64::MAX) {
                 // The next multiply/add would overflow, so just ignore all
                 // further digits.
                 while let b'0'..=b'9' = self.peek_or_nul() {
@@ -546,7 +559,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
             self.bump();
             let digit = i32::from(c - b'0');
 
-            if overflow!(exp * 10 + digit, i32::max_value()) {
+            if overflow!(exp * 10 + digit, i32::MAX) {
                 return self.parse_exponent_overflow(nonnegative, significand, positive_exp);
             }
 
@@ -583,32 +596,37 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         Ok(if nonnegative { 0.0 } else { -0.0 })
     }
 
-    fn event(&mut self) -> Result<Event> {
+    fn event<'s>(&mut self, scratch: &'s mut Vec<u8>) -> Result<Event<'s>>
+    where
+        'a: 's,
+    {
         let peek = match self.parse_whitespace() {
             Some(b) => b,
             None => return Err(Error),
         };
         self.bump();
         match peek {
-            b'"' => self.parse_str().map(Str),
-            digit @ b'0'..=b'9' => self.parse_integer(true, digit),
+            b'"' => self
+                .parse_str(scratch)
+                .map(|s| Event::Scalar(Scalar::Str(s))),
+            digit @ b'0'..=b'9' => self.parse_integer(true, digit).map(Event::Scalar),
             b'-' => {
                 let first_digit = self.next_or_nul();
-                self.parse_integer(false, first_digit)
+                self.parse_integer(false, first_digit).map(Event::Scalar)
             }
-            b'{' => Ok(MapStart),
-            b'[' => Ok(SeqStart),
+            b'{' => Ok(Event::MapStart),
+            b'[' => Ok(Event::SeqStart),
             b'n' => {
                 self.parse_ident(b"ull")?;
-                Ok(Null)
+                Ok(Event::Scalar(Scalar::Null))
             }
             b't' => {
                 self.parse_ident(b"rue")?;
-                Ok(Bool(true))
+                Ok(Event::Scalar(Scalar::Bool(true)))
             }
             b'f' => {
                 self.parse_ident(b"alse")?;
-                Ok(Bool(false))
+                Ok(Event::Scalar(Scalar::Bool(false)))
             }
             _ => Err(Error),
         }
@@ -618,7 +636,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
 fn f64_from_parts(nonnegative: bool, significand: u64, mut exponent: i32) -> Result<f64> {
     let mut f = significand as f64;
     loop {
-        match POW10.get(exponent.abs() as usize) {
+        match POW10.get(exponent.unsigned_abs() as usize) {
             Some(&pow) => {
                 if exponent >= 0 {
                     f *= pow;

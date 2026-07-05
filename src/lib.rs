@@ -218,9 +218,6 @@ pub mod export;
 #[macro_use]
 mod careful;
 
-#[macro_use]
-mod place;
-
 mod error;
 mod ignore;
 
@@ -233,8 +230,6 @@ pub use crate::de::Deserialize;
 pub use crate::error::{Error, Result};
 #[doc(inline)]
 pub use crate::ser::Serialize;
-
-make_place!(Place);
 
 #[allow(non_camel_case_types)]
 struct private;

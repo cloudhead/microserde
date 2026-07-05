@@ -1,11 +1,10 @@
 use crate::lib::*;
 
-use crate::de::{Deserialize, Map, Seq, Visitor};
+use crate::de::{Deserialize, Map, Place, Scalar, Seq, Visitor};
 use crate::error::Result;
 use crate::json::{Array, Number, Object};
 use crate::private;
 use crate::ser::{Fragment, Serialize};
-use crate::Place;
 
 /// Any valid JSON value.
 ///
@@ -56,49 +55,39 @@ impl Serialize for Value {
 }
 
 impl Deserialize for Value {
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-        impl Visitor for Place<Value> {
-            fn null(&mut self) -> Result<()> {
-                self.out = Some(Value::Null);
+    type Visitor<'a> = Place<'a, Value>;
+
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+        impl Visitor for Place<'_, Value> {
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                *self.out = Some(match *s {
+                    Scalar::Null => Value::Null,
+                    Scalar::Bool(b) => Value::Bool(b),
+                    Scalar::Str(s) => Value::String(s.to_owned()),
+                    Scalar::Negative(n) => Value::Number(Number::I64(n)),
+                    Scalar::Nonnegative(n) => Value::Number(Number::U64(n)),
+                    Scalar::Float(n) => Value::Number(Number::F64(n)),
+                });
                 Ok(())
             }
 
-            fn boolean(&mut self, b: bool) -> Result<()> {
-                self.out = Some(Value::Bool(b));
-                Ok(())
-            }
-
-            fn string(&mut self, s: &str) -> Result<()> {
-                self.out = Some(Value::String(s.to_owned()));
-                Ok(())
-            }
-
-            fn negative(&mut self, n: i64) -> Result<()> {
-                self.out = Some(Value::Number(Number::I64(n)));
-                Ok(())
-            }
-
-            fn nonnegative(&mut self, n: u64) -> Result<()> {
-                self.out = Some(Value::Number(Number::U64(n)));
-                Ok(())
-            }
-
-            fn float(&mut self, n: f64) -> Result<()> {
-                self.out = Some(Value::Number(Number::F64(n)));
-                Ok(())
-            }
-
-            fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
+            fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(ArrayBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     array: Array::new(),
                     element: None,
                 }))
             }
 
-            fn map(&mut self) -> Result<Box<dyn Map + '_>> {
+            fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+            where
+                Self: 's,
+            {
                 Ok(Box::new(ObjectBuilder {
-                    out: &mut self.out,
+                    out: self.out,
                     object: Object::new(),
                     key: None,
                     value: None,
@@ -121,15 +110,20 @@ impl Deserialize for Value {
         }
 
         impl<'a> Seq for ArrayBuilder<'a> {
-            fn element(&mut self) -> Result<&mut dyn Visitor> {
+            fn element(&mut self) -> Result<Box<dyn Visitor + '_>> {
                 self.shift();
-                Ok(Deserialize::begin(&mut self.element))
+                Ok(Box::new(Deserialize::begin(&mut self.element)))
             }
 
             fn finish(&mut self) -> Result<()> {
                 self.shift();
                 *self.out = Some(Value::Array(mem::replace(&mut self.array, Array::new())));
                 Ok(())
+            }
+
+            fn scalar(&mut self, s: &Scalar) -> Result<()> {
+                self.shift();
+                Deserialize::begin(&mut self.element).scalar(s)
             }
         }
 
@@ -149,16 +143,22 @@ impl Deserialize for Value {
         }
 
         impl<'a> Map for ObjectBuilder<'a> {
-            fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
+            fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>> {
                 self.shift();
                 self.key = Some(k.to_owned());
-                Ok(Deserialize::begin(&mut self.value))
+                Ok(Box::new(Deserialize::begin(&mut self.value)))
             }
 
             fn finish(&mut self) -> Result<()> {
                 self.shift();
                 *self.out = Some(Value::Object(mem::replace(&mut self.object, Object::new())));
                 Ok(())
+            }
+
+            fn scalar(&mut self, k: &str, s: &Scalar) -> Result<()> {
+                self.shift();
+                self.key = Some(k.to_owned());
+                Deserialize::begin(&mut self.value).scalar(s)
             }
         }
 

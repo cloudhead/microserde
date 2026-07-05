@@ -1,76 +1,75 @@
 //! Deserialization traits.
 //!
-//! Deserialization in microserde works by returning a "place" into which data
-//! may be written through the methods of the `Visitor` trait object.
+//! Deserialization in microserde works by handing out a visitor that borrows
+//! the output slot into which data may be written through the methods of the
+//! `Visitor` trait.
 //!
-//! Use the `make_place!` macro to acquire a "place" type. A library may use a
-//! single place type across all of its Deserialize impls, or each impl or each
-//! module may use a private place type. There is no difference.
-//!
-//! A place is simply:
-//!
-//! ```rust
-//! struct Place<T> {
-//!     out: Option<T>,
-//! }
-//! ```
-//!
-//! Upon successful deserialization the output object is written as `Some(T)`
-//! into the `out` field of the place.
+//! A `Deserialize` impl provides an associated visitor type that holds a
+//! `&mut Option<Self>` pointing at the output slot. Upon successful
+//! deserialization the output object is written as `Some(T)` into that slot.
 //!
 //! ## Deserializing a primitive
 //!
-//! The Visitor trait has a method corresponding to each supported primitive
-//! type.
+//! The visitor receives scalar values through the `scalar` method and matches
+//! on the [`Scalar`] variants that the Rust type supports deserializing from.
 //!
 //! ```rust
-//! use microserde::{make_place, Result};
-//! use microserde::de::{Deserialize, Visitor};
-//!
-//! make_place!(Place);
+//! use microserde::{Error, Result};
+//! use microserde::de::{Deserialize, Scalar, Visitor};
 //!
 //! struct MyBoolean(bool);
 //!
-//! // The Visitor trait has a selection of methods corresponding to different
-//! // data types. We override the ones that our Rust type supports
-//! // deserializing from, and write the result into the `out` field of our
-//! // output place.
+//! struct MyBooleanVisitor<'a> {
+//!     out: &'a mut Option<MyBoolean>,
+//! }
+//!
+//! // We match the scalar variants that our Rust type supports deserializing
+//! // from, and write the result into the output slot.
 //! //
-//! // These methods may perform validation and decide to return an error.
-//! impl Visitor for Place<MyBoolean> {
-//!     fn boolean(&mut self, b: bool) -> Result<()> {
-//!         self.out = Some(MyBoolean(b));
+//! // This method may perform validation and decide to return an error.
+//! impl Visitor for MyBooleanVisitor<'_> {
+//!     fn scalar(&mut self, s: &Scalar) -> Result<()> {
+//!         let Scalar::Bool(b) = *s else {
+//!             return Err(Error);
+//!         };
+//!         *self.out = Some(MyBoolean(b));
 //!         Ok(())
 //!     }
 //! }
 //!
 //! impl Deserialize for MyBoolean {
-//!     fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-//!         // All Deserialize impls will look exactly like this. There is no
-//!         // other correct implementation of Deserialize.
-//!         Place::new(out)
+//!     type Visitor<'a> = MyBooleanVisitor<'a>;
+//!
+//!     fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+//!         MyBooleanVisitor { out }
 //!     }
 //! }
 //! ```
 //!
 //! ## Deserializing a sequence
 //!
-//! In the case of a sequence (JSON array), the visitor method returns a builder
-//! that can hand out places to write sequence elements one element at a time.
+//! In the case of a sequence (JSON array), the visitor method consumes the
+//! visitor and returns a builder that can hand out visitors to write sequence
+//! elements one element at a time.
 //!
 //! ```rust
-//! use microserde::{make_place, Result};
+//! use microserde::Result;
 //! use microserde::de::{Deserialize, Seq, Visitor};
 //! use std::mem;
 //!
-//! make_place!(Place);
-//!
 //! struct MyVec<T>(Vec<T>);
 //!
-//! impl<T: Deserialize> Visitor for Place<MyVec<T>> {
-//!     fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
+//! struct MyVecVisitor<'a, T> {
+//!     out: &'a mut Option<MyVec<T>>,
+//! }
+//!
+//! impl<T: Deserialize> Visitor for MyVecVisitor<'_, T> {
+//!     fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+//!     where
+//!         Self: 's,
+//!     {
 //!         Ok(Box::new(VecBuilder {
-//!             out: &mut self.out,
+//!             out: self.out,
 //!             vec: Vec::new(),
 //!             element: None,
 //!         }))
@@ -87,12 +86,12 @@
 //! }
 //!
 //! impl<'a, T: Deserialize> Seq for VecBuilder<'a, T> {
-//!     fn element(&mut self) -> Result<&mut dyn Visitor> {
+//!     fn element(&mut self) -> Result<Box<dyn Visitor + '_>> {
 //!         // Free up the place by transfering the most recent element
 //!         // into self.vec.
 //!         self.vec.extend(self.element.take());
-//!         // Hand out a place to write the next element.
-//!         Ok(Deserialize::begin(&mut self.element))
+//!         // Hand out a visitor to write the next element.
+//!         Ok(Box::new(Deserialize::begin(&mut self.element)))
 //!     }
 //!
 //!     fn finish(&mut self) -> Result<()> {
@@ -106,9 +105,13 @@
 //! }
 //!
 //! impl<T: Deserialize> Deserialize for MyVec<T> {
-//!     fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-//!         // As mentioned, all Deserialize impls will look like this.
-//!         Place::new(out)
+//!     type Visitor<'a>
+//!         = MyVecVisitor<'a, T>
+//!     where
+//!         Self: 'a;
+//!
+//!     fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+//!         MyVecVisitor { out }
 //!     }
 //! }
 //! ```
@@ -119,10 +122,8 @@
 //! `#[derive(Deserialize)]`.
 //!
 //! ```rust
-//! use microserde::{make_place, Result};
+//! use microserde::Result;
 //! use microserde::de::{Deserialize, Map, Visitor};
-//!
-//! make_place!(Place);
 //!
 //! // The struct that we would like to deserialize.
 //! struct Demo {
@@ -130,14 +131,21 @@
 //!     message: String,
 //! }
 //!
-//! impl Visitor for Place<Demo> {
-//!     fn map(&mut self) -> Result<Box<dyn Map + '_>> {
-//!         // Like for sequences, we produce a builder that can hand out places
-//!         // to write one struct field at a time.
+//! struct DemoVisitor<'a> {
+//!     out: &'a mut Option<Demo>,
+//! }
+//!
+//! impl Visitor for DemoVisitor<'_> {
+//!     fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+//!     where
+//!         Self: 's,
+//!     {
+//!         // Like for sequences, we produce a builder that can hand out
+//!         // visitors to write one struct field at a time.
 //!         Ok(Box::new(DemoBuilder {
 //!             code: None,
 //!             message: None,
-//!             out: &mut self.out,
+//!             out: self.out,
 //!         }))
 //!     }
 //! }
@@ -149,17 +157,17 @@
 //! }
 //!
 //! impl<'a> Map for DemoBuilder<'a> {
-//!     fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
-//!         // Figure out which field is being deserialized and return a place
-//!         // to write it.
+//!     fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>> {
+//!         // Figure out which field is being deserialized and return a
+//!         // visitor to write it.
 //!         //
 //!         // The code here ignores unrecognized fields but an implementation
 //!         // would be free to return an error instead. Similarly an
 //!         // implementation may want to check for duplicate fields by
 //!         // returning an error if the current field already has a value.
 //!         match k {
-//!             "code" => Ok(Deserialize::begin(&mut self.code)),
-//!             "message" => Ok(Deserialize::begin(&mut self.message)),
+//!             "code" => Ok(Box::new(Deserialize::begin(&mut self.code))),
+//!             "message" => Ok(Box::new(Deserialize::begin(&mut self.message))),
 //!             _ => Ok(<dyn Visitor>::ignore()),
 //!         }
 //!     }
@@ -175,9 +183,10 @@
 //! }
 //!
 //! impl Deserialize for Demo {
-//!     fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-//!         // All Deserialize impls look like this.
-//!         Place::new(out)
+//!     type Visitor<'a> = DemoVisitor<'a>;
+//!
+//!     fn begin(out: &mut Option<Self>) -> Self::Visitor<'_> {
+//!         DemoVisitor { out }
 //!     }
 //! }
 //! ```
@@ -189,25 +198,16 @@ use crate::lib::Box;
 
 /// Trait for data structures that can be deserialized from a JSON string.
 ///
-/// [Refer to the module documentation for examples.][::de]
+/// [Refer to the module documentation for examples.][crate::de]
 pub trait Deserialize: Sized {
-    /// The only correct implementation of this method is:
-    ///
-    /// ```rust
-    /// # use microserde::make_place;
-    /// # use microserde::de::{Deserialize, Visitor};
-    /// #
-    /// # make_place!(Place);
-    /// # struct S;
-    /// # impl Visitor for Place<S> {}
-    /// #
-    /// # impl Deserialize for S {
-    /// fn begin(out: &mut Option<Self>) -> &mut dyn Visitor {
-    ///     Place::new(out)
-    /// }
-    /// # }
-    /// ```
-    fn begin(out: &mut Option<Self>) -> &mut dyn Visitor;
+    /// A visitor holding a mutable reference to the output slot, into which
+    /// the deserialized value is written.
+    type Visitor<'a>: Visitor + 'a
+    where
+        Self: 'a;
+
+    /// Build a visitor that writes into the given output slot.
+    fn begin(out: &mut Option<Self>) -> Self::Visitor<'_>;
 
     // Not public API. This method is only intended for Option<T>, should not
     // need to be implemented outside of this crate.
@@ -218,159 +218,199 @@ pub trait Deserialize: Sized {
     }
 }
 
+/// A single scalar value.
+pub enum Scalar<'a> {
+    Null,
+    Bool(bool),
+    Str(&'a str),
+    Negative(i64),
+    Nonnegative(u64),
+    Float(f64),
+}
+
 /// Trait that can write data into an output place.
 ///
-/// [Refer to the module documentation for examples.][::de]
+/// [Refer to the module documentation for examples.][crate::de]
 pub trait Visitor {
-    fn null(&mut self) -> Result<()> {
-        Err(Error)
-    }
-
-    fn boolean(&mut self, b: bool) -> Result<()> {
-        let _ = b;
-        Err(Error)
-    }
-
-    fn string(&mut self, s: &str) -> Result<()> {
+    /// Write a scalar value into the output slot.
+    fn scalar(&mut self, s: &Scalar) -> Result<()> {
         let _ = s;
         Err(Error)
     }
 
-    fn negative(&mut self, n: i64) -> Result<()> {
-        let _ = n;
+    /// Begin a sequence (JSON array). Consumes the visitor and returns a
+    /// builder owning everything the visitor held, so that the builder can
+    /// hand out element visitors and finally write the output slot.
+    fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+    where
+        Self: 's,
+    {
         Err(Error)
     }
 
-    fn nonnegative(&mut self, n: u64) -> Result<()> {
-        let _ = n;
-        Err(Error)
-    }
-
-    fn float(&mut self, n: f64) -> Result<()> {
-        let _ = n;
-        Err(Error)
-    }
-
-    fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
-        Err(Error)
-    }
-
-    fn map(&mut self) -> Result<Box<dyn Map + '_>> {
+    /// Begin a map (JSON object). Consumes the visitor and returns a builder
+    /// owning everything the visitor held, so that the builder can hand out
+    /// value visitors and finally write the output slot.
+    fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+    where
+        Self: 's,
+    {
         Err(Error)
     }
 }
 
-/// Trait that can hand out places to write sequence elements.
+/// Trait that can hand out visitors to write sequence elements.
 ///
-/// [Refer to the module documentation for examples.][::de]
+/// [Refer to the module documentation for examples.][crate::de]
 pub trait Seq {
-    fn element(&mut self) -> Result<&mut dyn Visitor>;
+    fn element(&mut self) -> Result<Box<dyn Visitor + '_>>;
     fn finish(&mut self) -> Result<()>;
+
+    /// Write a scalar element. Equivalent to writing through the visitor
+    /// returned by `element`, which is what the default implementation does;
+    /// implementations can override this to write the element without
+    /// allocating a boxed visitor.
+    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+        self.element()?.scalar(s)
+    }
 }
 
-/// Trait that can hand out places to write values of a map.
+/// Trait that can hand out visitors to write values of a map.
 ///
-/// [Refer to the module documentation for examples.][::de]
+/// [Refer to the module documentation for examples.][crate::de]
 pub trait Map {
-    fn key(&mut self, k: &str) -> Result<&mut dyn Visitor>;
+    fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>>;
     fn finish(&mut self) -> Result<()>;
+
+    /// Write a scalar value under the given key. Equivalent to writing
+    /// through the visitor returned by `key`, which is what the default
+    /// implementation does; implementations can override this to write the
+    /// value without allocating a boxed visitor.
+    fn scalar(&mut self, k: &str, s: &Scalar) -> Result<()> {
+        self.key(k)?.scalar(s)
+    }
 }
 
-// Not public API. Implemented by `#[serde(transparent)]` newtypes, which
-// deserialize by delegating to the inner type and wrapping the result.
+/// A visitor that holds nothing but a mutable reference to the output slot.
+///
+/// This is the visitor type used by the `Deserialize` impls built into
+/// microserde for types whose visitor needs no state besides the output slot.
+///
+/// Note that the orphan rules prevent other crates from writing `impl Visitor
+/// for Place<'_, TheirType>`, so outside of microserde a bespoke visitor
+/// struct holding the output slot must be defined instead. [Refer to the
+/// module documentation for examples.][crate::de]
+pub struct Place<'a, T> {
+    /// The output slot. Upon successful deserialization the output object is
+    /// written here as `Some(T)`.
+    pub out: &'a mut Option<T>,
+}
+
+impl<'a, T> Place<'a, T> {
+    pub fn new(out: &'a mut Option<T>) -> Self {
+        Place { out }
+    }
+}
+
+// Not public API. Implemented by types that deserialize by delegating to an
+// inner type and wrapping the result: `#[serde(transparent)]` newtypes and
+// `Box<T>`.
 #[doc(hidden)]
 pub trait Transparent: Sized {
     type Inner: Deserialize;
     fn wrap(inner: Self::Inner) -> Self;
 }
 
+// Not public API. The visitor type of `#[serde(transparent)]` derived impls.
+#[doc(hidden)]
+pub struct TransparentVisitor<'a, T: Transparent> {
+    out: &'a mut Option<T>,
+}
+
 // Not public API. The `Deserialize::begin` of `#[serde(transparent)]` derived
 // impls.
 #[doc(hidden)]
-pub fn transparent<T: Transparent>(out: &mut Option<T>) -> &mut dyn Visitor {
-    make_place!(Place);
+pub fn transparent<T: Transparent>(out: &mut Option<T>) -> TransparentVisitor<'_, T> {
+    TransparentVisitor { out }
+}
 
-    impl<T: Transparent> Place<T> {
-        fn wrap(&mut self, value: Option<T::Inner>) -> Result<()> {
-            self.out = Some(T::wrap(value.ok_or(Error)?));
-            Ok(())
-        }
+impl<'a, T: Transparent> Visitor for TransparentVisitor<'a, T> {
+    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+        let mut value: Option<T::Inner> = None;
+        Deserialize::begin(&mut value).scalar(s)?;
+        *self.out = Some(T::wrap(value.ok_or(Error)?));
+        Ok(())
     }
 
-    macro_rules! forward {
-        ($name:ident $(, $arg:ident: $ty:ty)*) => {
-            fn $name(&mut self $(, $arg: $ty)*) -> Result<()> {
-                let mut value = None;
-                Deserialize::begin(&mut value).$name($($arg),*)?;
-                self.wrap(value)
-            }
-        };
+    fn seq<'s>(self: Box<Self>) -> Result<Box<dyn Seq + 's>>
+    where
+        Self: 's,
+    {
+        let mut value = Box::new(None);
+        let ptr = careful!(&mut *value as &mut Option<T::Inner>);
+        Ok(Box::new(TransparentSeq {
+            out: self.out,
+            seq: Box::new(Deserialize::begin(ptr)).seq()?,
+            value,
+        }))
     }
 
-    impl<T: Transparent> Visitor for Place<T> {
-        forward!(null);
-        forward!(boolean, b: bool);
-        forward!(string, s: &str);
-        forward!(negative, n: i64);
-        forward!(nonnegative, n: u64);
-        forward!(float, n: f64);
+    fn map<'s>(self: Box<Self>) -> Result<Box<dyn Map + 's>>
+    where
+        Self: 's,
+    {
+        let mut value = Box::new(None);
+        let ptr = careful!(&mut *value as &mut Option<T::Inner>);
+        Ok(Box::new(TransparentMap {
+            out: self.out,
+            map: Box::new(Deserialize::begin(ptr)).map()?,
+            value,
+        }))
+    }
+}
 
-        fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
-            let mut value = Box::new(None);
-            let ptr = careful!(&mut *value as &mut Option<T::Inner>);
-            Ok(Box::new(TransparentSeq {
-                out: &mut self.out,
-                value,
-                seq: Deserialize::begin(ptr).seq()?,
-            }))
-        }
+struct TransparentSeq<'a, T: Transparent + 'a> {
+    out: &'a mut Option<T>,
+    // Borrows from `value`, so it is declared first to be dropped first.
+    seq: Box<dyn Seq + 'a>,
+    value: Box<Option<T::Inner>>,
+}
 
-        fn map(&mut self) -> Result<Box<dyn Map + '_>> {
-            let mut value = Box::new(None);
-            let ptr = careful!(&mut *value as &mut Option<T::Inner>);
-            Ok(Box::new(TransparentMap {
-                out: &mut self.out,
-                value,
-                map: Deserialize::begin(ptr).map()?,
-            }))
-        }
+impl<'a, T: Transparent> Seq for TransparentSeq<'a, T> {
+    fn element(&mut self) -> Result<Box<dyn Visitor + '_>> {
+        self.seq.element()
     }
 
-    struct TransparentSeq<'a, T: Transparent + 'a> {
-        out: &'a mut Option<T>,
-        value: Box<Option<T::Inner>>,
-        seq: Box<dyn Seq + 'a>,
+    fn finish(&mut self) -> Result<()> {
+        self.seq.finish()?;
+        *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
+        Ok(())
     }
 
-    impl<'a, T: Transparent> Seq for TransparentSeq<'a, T> {
-        fn element(&mut self) -> Result<&mut dyn Visitor> {
-            self.seq.element()
-        }
+    fn scalar(&mut self, s: &Scalar) -> Result<()> {
+        self.seq.scalar(s)
+    }
+}
 
-        fn finish(&mut self) -> Result<()> {
-            self.seq.finish()?;
-            *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
-            Ok(())
-        }
+struct TransparentMap<'a, T: Transparent + 'a> {
+    out: &'a mut Option<T>,
+    // Borrows from `value`, so it is declared first to be dropped first.
+    map: Box<dyn Map + 'a>,
+    value: Box<Option<T::Inner>>,
+}
+
+impl<'a, T: Transparent> Map for TransparentMap<'a, T> {
+    fn key(&mut self, k: &str) -> Result<Box<dyn Visitor + '_>> {
+        self.map.key(k)
     }
 
-    struct TransparentMap<'a, T: Transparent + 'a> {
-        out: &'a mut Option<T>,
-        value: Box<Option<T::Inner>>,
-        map: Box<dyn Map + 'a>,
+    fn finish(&mut self) -> Result<()> {
+        self.map.finish()?;
+        *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
+        Ok(())
     }
 
-    impl<'a, T: Transparent> Map for TransparentMap<'a, T> {
-        fn key(&mut self, k: &str) -> Result<&mut dyn Visitor> {
-            self.map.key(k)
-        }
-
-        fn finish(&mut self) -> Result<()> {
-            self.map.finish()?;
-            *self.out = Some(T::wrap(self.value.take().ok_or(Error)?));
-            Ok(())
-        }
+    fn scalar(&mut self, k: &str, s: &Scalar) -> Result<()> {
+        self.map.scalar(k, s)
     }
-
-    Place::new(out)
 }

@@ -25,7 +25,12 @@ fn derive_transparent_struct(input: &DeriveInput, fields: &FieldsUnnamed) -> Res
 
     Ok(quote! {
         impl #impl_generics microserde::Deserialize for #ident #ty_generics #bounded_where_clause {
-            fn begin(__out: &mut microserde::export::Option<Self>) -> &mut dyn microserde::de::Visitor {
+            type Visitor<'__a>
+                = microserde::de::TransparentVisitor<'__a, Self>
+            where
+                Self: '__a;
+
+            fn begin(__out: &mut microserde::export::Option<Self>) -> Self::Visitor<'_> {
                 microserde::de::transparent(__out)
             }
         }
@@ -84,30 +89,34 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
     Ok(quote! {
         #[allow(non_local_definitions)]
         const _: () = {
-            #[repr(C)]
-            struct __Visitor #impl_generics #where_clause {
-                __out: microserde::export::Option<#ident #ty_generics>,
+            // Public to satisfy E0446 when the derived type is public, since
+            // this type is named by the `Deserialize::Visitor` associated
+            // type; the anonymous const keeps it unnameable from outside.
+            pub struct __Visitor #wrapper_impl_generics #where_clause {
+                __out: &'__a mut microserde::export::Option<#ident #ty_generics>,
             }
 
             impl #impl_generics microserde::Deserialize for #ident #ty_generics #bounded_where_clause {
-                fn begin(__out: &mut microserde::export::Option<Self>) -> &mut dyn microserde::de::Visitor {
-                    unsafe {
-                        &mut *{
-                            __out
-                            as *mut microserde::export::Option<Self>
-                            as *mut __Visitor #ty_generics
-                        }
-                    }
+                type Visitor<'__a>
+                    = __Visitor #wrapper_ty_generics
+                where
+                    Self: '__a;
+
+                fn begin(__out: &mut microserde::export::Option<Self>) -> Self::Visitor<'_> {
+                    __Visitor { __out }
                 }
             }
 
-            impl #impl_generics microserde::de::Visitor for __Visitor #ty_generics #bounded_where_clause {
-                fn map(&mut self) -> microserde::Result<microserde::export::Box<dyn microserde::de::Map + '_>> {
-                    Ok(microserde::export::Box::new(__State {
+            impl #wrapper_impl_generics microserde::de::Visitor for __Visitor #wrapper_ty_generics #bounded_where_clause {
+                fn map<'__s>(self: microserde::export::Box<Self>) -> microserde::Result<microserde::export::Box<dyn microserde::de::Map + '__s>>
+                where
+                    Self: '__s,
+                {
+                    microserde::export::Ok(microserde::export::Box::new(__State {
                         #(
                             #fieldname: #fielddefault,
                         )*
-                        __out: &mut self.__out,
+                        __out: self.__out,
                     }))
                 }
             }
@@ -120,12 +129,24 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
             }
 
             impl #wrapper_impl_generics microserde::de::Map for __State #wrapper_ty_generics #bounded_where_clause {
-                fn key(&mut self, __k: &microserde::export::str) -> microserde::Result<&mut dyn microserde::de::Visitor> {
+                fn key(&mut self, __k: &microserde::export::str) -> microserde::Result<microserde::export::Box<dyn microserde::de::Visitor + '_>> {
                     match __k {
                         #(
-                            #fieldstr => microserde::export::Ok(<#fieldty as microserde::Deserialize>::begin(&mut self.#fieldname)),
+                            #fieldstr => microserde::export::Ok(microserde::export::Box::new(<#fieldty as microserde::Deserialize>::begin(&mut self.#fieldname))),
                         )*
                         _ => microserde::export::Ok(<dyn microserde::de::Visitor>::ignore()),
+                    }
+                }
+
+                fn scalar(&mut self, __k: &microserde::export::str, __s: &microserde::de::Scalar) -> microserde::Result<()> {
+                    match __k {
+                        #(
+                            #fieldstr => microserde::de::Visitor::scalar(
+                                &mut <#fieldty as microserde::Deserialize>::begin(&mut self.#fieldname),
+                                __s,
+                            ),
+                        )*
+                        _ => microserde::export::Ok(()),
                     }
                 }
 
@@ -175,30 +196,31 @@ pub fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenS
     Ok(quote! {
         #[allow(non_local_definitions)]
         const _: () = {
-            #[repr(C)]
-            struct __Visitor {
-                __out: microserde::export::Option<#ident>,
+            // Public to satisfy E0446 when the derived type is public, since
+            // this type is named by the `Deserialize::Visitor` associated
+            // type; the anonymous const keeps it unnameable from outside.
+            pub struct __Visitor<'__a> {
+                __out: &'__a mut microserde::export::Option<#ident>,
             }
 
             impl microserde::Deserialize for #ident {
-                fn begin(__out: &mut microserde::export::Option<Self>) -> &mut dyn microserde::de::Visitor {
-                    unsafe {
-                        &mut *{
-                            __out
-                            as *mut microserde::export::Option<Self>
-                            as *mut __Visitor
-                        }
-                    }
+                type Visitor<'__a> = __Visitor<'__a>;
+
+                fn begin(__out: &mut microserde::export::Option<Self>) -> Self::Visitor<'_> {
+                    __Visitor { __out }
                 }
             }
 
-            impl microserde::de::Visitor for __Visitor {
-                fn string(&mut self, s: &microserde::export::str) -> microserde::Result<()> {
-                    let value = match s {
+            impl<'__a> microserde::de::Visitor for __Visitor<'__a> {
+                fn scalar(&mut self, __s: &microserde::de::Scalar) -> microserde::Result<()> {
+                    let microserde::de::Scalar::Str(__s) = __s else {
+                        return microserde::export::Err(microserde::Error);
+                    };
+                    let __value = match *__s {
                         #( #names => #ident::#var_idents, )*
                         _ => { return microserde::export::Err(microserde::Error) },
                     };
-                    self.__out = microserde::export::Some(value);
+                    *self.__out = microserde::export::Some(__value);
                     microserde::export::Ok(())
                 }
             }
