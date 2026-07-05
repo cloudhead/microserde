@@ -1,6 +1,6 @@
 [package]
 name = "microserde"
-version = "0.2.0"
+version = "0.3.1"
 authors = ["David Tolnay <dtolnay@gmail.com>", "Alexis Sellier <self@cloudhead.io>"]
 license = "MIT OR Apache-2.0"
 description = "Zero-dependency implementation of Serde"
@@ -10,7 +10,7 @@ readme = "README.md"
 edition = "2021"
 
 [dependencies]
-microserde-derive = { version = "=0.2.0", path = "derive" }
+microserde-derive = { version = "=0.3.0", path = "derive" }
 
 [dev-dependencies]
 automod = "1.0"
